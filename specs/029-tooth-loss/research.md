@@ -375,6 +375,23 @@ software's screen translations, not patient languages, so it isn't here.
 | `EntryDateTime` | datetime | when written |
 | `Note` | string | the clinical note; would hold PHI |
 
+### `document`
+*(Document.cs; checked 2026-10-31 for #385)*
+
+| Column | Type | Meaning |
+|---|---|---|
+| `DocNum` | bigint | primary key |
+| `PatNum` | bigint | FK to `patient`: the patient's image folder |
+| `DateCreated` | datetime | when the image was taken or added |
+| `DocCategory` | bigint | FK to `definition` (category 18, ImageCats): the image folder, e.g. radiographs |
+| `ImgType` | tinyint | enum ImageType: 0 document, 1 radiograph, 2 photo, 3 file, 4 attachment |
+| `ToothNumbers` | string | optional tooth numbers on the image, comma separated (universal numbering) |
+| `Description` | string | free text describing the image; could hold PHI |
+| `FileName` | string | the image file's name; could hold PHI |
+
+Open Dental stores the image and these fields only. It has no column for bone loss or any other reading of the
+image: a dentist's reading is free text in a note, and a reading tool keeps its own results.
+
 ### `ehrmeasureevent`
 *(EhrMeasureEvent.cs)*
 

@@ -23,6 +23,10 @@ defnum,category,itemname
 22,11,Cleanings
 23,11,Periodontics
 24,11,Oral Surgery
-25,35,General
-26,35,Hygienist
-27,35,Periodontist
+25,11,Radiographs
+26,35,General
+27,35,Hygienist
+28,35,Periodontist
+29,18,Radiographs
+30,18,Photos
+31,18,Documents

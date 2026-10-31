@@ -9,7 +9,7 @@ from health_transformation_lab_nlp import tooth_loss as tl
 D = pd.Timestamp
 
 
-def _extract(procs=(), initial=(), exams=(), measures=(), plans=(), smoke="266919005", diseases=()):
+def _extract(procs=(), initial=(), exams=(), measures=(), plans=(), smoke="266919005", diseases=(), readings=()):
     """A tiny extract for patient 1. procs: (procnum, tooth, status, dx_name, datetp, datecomplete).
     exams: (examnum, date). measures: (examnum, tooth, seq, six site values or toothvalue)."""
     defs = [(i + 1, od.DEFCAT_DIAGNOSIS, n, a, i, False) for i, (n, a, _) in enumerate(od.OLDER_LIST + od.LIST_2017)]
@@ -41,7 +41,10 @@ def _extract(procs=(), initial=(), exams=(), measures=(), plans=(), smoke="26691
                                    columns=od.TABLES["diseasedef"])
     t["disease"] = pd.DataFrame([{"diseasenum": i + 1, "patnum": 1, "diseasedefnum": 1} for i in range(len(diseases))],
                                 columns=od.TABLES["disease"])
-    return od.clean(t)
+    x = od.clean(t)
+    x["radiograph_bone_level"] = pd.DataFrame([(doc, tooth, 1, D(d), pct, True) for doc, tooth, d, pct in readings],
+                                              columns=od.READING_COLUMNS).astype({"bone_loss_pct": "float64"})
+    return x
 
 
 def _row(table, tooth):
@@ -150,3 +153,37 @@ def test_the_tables_hold_the_columns_the_silver_model_declares():
     for name, df in (("patient_tooth", tl.tooth_table(x)), ("planned_extraction", tl.planned_extraction(x))):
         declared = [c.name for c in model.TABLES[name].columns]   # the batch key is in load_log
         assert list(df.columns) == declared, name
+
+
+# ---------- US6 (#385): messy charts and radiographs ----------
+def test_own_measures_come_from_the_last_exam_that_charted_the_tooth():
+    # exam 2 is partial: it charts tooth 4 but not tooth 3, so tooth 3's own measures come from exam 1
+    x = _extract(procs=[(10, 3, od.COMPLETE, "Periodontitis, stage IV", "2020-09-01", "2020-09-01")],
+                 exams=[(1, "2020-01-01"), (2, "2020-07-01")],
+                 measures=[(1, 3, od.SEQ_PROBING, [5, 4, 4, 4, 4, 4]), (1, 3, od.SEQ_MARGIN, [1] * 6),
+                           (2, 4, od.SEQ_PROBING, [3] * 6), (2, 4, od.SEQ_MARGIN, [4] * 6)])
+    r = _row(tl.tooth_table(x), 3)
+    assert r["last_exam_date"] == D("2020-01-01") and r["last_max_pd_mm"] == 5 and r["last_max_cal_mm"] == 6
+    assert r["neighbour_max_cal_mm"] == 7                     # neighbours from the patient's last exam, 3 + 4
+
+
+def test_the_last_radiograph_reading_before_the_loss_is_the_teeths_bone_loss():
+    x = _extract(procs=[(10, 3, od.COMPLETE, "Periodontitis, stage IV", "2021-01-01", "2021-01-01")],
+                 exams=[(1, "2020-01-01")], measures=[(1, 3, od.SEQ_PROBING, [4] * 6)],
+                 readings=[(1, 3, "2020-01-01", 40.0), (1, 4, "2020-01-01", 20.0), (2, 3, "2020-06-01", None),
+                           (3, 3, "2021-03-01", 80.0)])            # unread, then after the loss: neither used
+    t = tl.tooth_table(x)
+    r = _row(t, 3)
+    assert r["last_rbl_pct"] == 40 and r["last_radiograph_date"] == D("2020-01-01")
+    assert r["mouth_max_rbl_pct"] == 40                        # the first radiograph read: worst of 40 and 20
+    assert pd.isna(_row(t, 10)["last_rbl_pct"])                 # never on an image
+
+
+def test_each_tooth_says_how_good_its_last_chart_was():
+    x = _extract(exams=[(1, "2020-01-01"), (2, "2020-07-01")],
+                 measures=[(1, 3, od.SEQ_PROBING, [3] * 6), (1, 4, od.SEQ_PROBING, [3] * 6),
+                           (2, 5, od.SEQ_PROBING, [4, 5, 4, 3, 3, 3])])
+    t = tl.tooth_table(x)
+    assert _row(t, 3)["last_chart_quality_code"] == "uniform"
+    assert _row(t, 5)["last_chart_quality_code"] == "partial"  # one tooth of 32 charted
+    assert pd.isna(_row(t, 9)["last_chart_quality_code"])      # never charted

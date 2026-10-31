@@ -40,6 +40,9 @@ erDiagram
     cdcrec ||--o{ patientrace : "cdcreccode"
     site |o--o{ patient : "sitenum"
     procedurelog ||--o{ procnote : "procnum"
+    patient ||--o{ document : "patnum"
+    definition ||--o{ document : "defnum = doccategory (category 18)"
+    document ||--o{ radiograph_bone_level : "docnum = document_id (ImgType 1)"
     patient ||--o{ ehrmeasureevent : "patnum"
     snomed |o..o{ ehrmeasureevent : "codevalueresult = snomedcode"
     patient ||--o{ patfield : "patnum"
@@ -74,10 +77,12 @@ erDiagram
     cdcrec
     site
     procnote
+    document
     ehrmeasureevent
     patfield
     snomed
     patient_tooth
+    radiograph_bone_level
     planned_extraction
     tooth_loss_dq_check
     tooth_loss_truth
@@ -453,6 +458,21 @@ One per note on a procedure; not every procedure has one. tooth_loss_load: overw
 |  | `entrydatetime` | timestamp | when written |
 |  | `note` | string | the clinical note |
 
+### `document`
+
+One per image in a patient's folder; radiographs are ImgType 1. tooth_loss_load: overwrite per run.
+
+| Key | Column | Type | Description |
+|---|---|---|---|
+| PK | `docnum` | bigint | key |
+| FK | `patnum` | bigint | patient |
+|  | `datecreated` | timestamp | when the image was taken |
+| FK | `doccategory` | bigint | image folder (definition category 18) |
+|  | `imgtype` | bigint | 0 document · 1 radiograph · 2 photo · 3 file · 4 attachment |
+|  | `toothnumbers` | string | teeth on the image, comma separated |
+|  | `description` | string | free text about the image |
+|  | `filename` | string | the image file's name |
+
 ### `ehrmeasureevent`
 
 One per measure event, e.g. a tobacco use assessment. tooth_loss_load: overwrite per run.
@@ -502,20 +522,37 @@ One per patient and tooth (1–32): how it was lost, and what was charted before
 |  | `label_source_code` | string | completed · planned · none: which record gave the label |
 | FK | `dx_def_id` | bigint | the mapped diagnosis item (definition.defnum) |
 |  | `is_perio_loss` | boolean | the label: diagnosis maps to periodontal; null when no diagnosis |
-|  | `last_exam_date` | date | last perio exam before the loss |
+|  | `last_exam_date` | date | last perio exam that charted the tooth, on or before the loss |
 |  | `last_max_pd_mm` | double | the tooth's own deepest probing before the loss |
 |  | `last_max_cal_mm` | double | own CAL = probing + gingival margin, before the loss |
 |  | `last_bop_pct` | double | own sites bleeding, 0–100 |
 |  | `last_mobility_code` | string | own mobility grade 0–3 |
+|  | `last_chart_quality_code` | string | the last chart that charted the tooth: complete · partial · copied · uniform |
+|  | `last_rbl_pct` | double | own radiographic bone loss on the last radiograph read before the loss (simulated reading) |
+|  | `last_radiograph_date` | date | that radiograph's date |
 |  | `neighbour_max_cal_mm` | double | worst CAL on the teeth either side |
 |  | `mouth_cal5_site_pct` | double | sites with CAL ≥ 5 mm at the first exam, 0–100 |
 |  | `mouth_max_pd_mm` | double | deepest probing in the mouth at the first exam |
 |  | `mouth_bop_pct` | double | sites bleeding in the mouth at the first exam, 0–100 |
+|  | `mouth_max_rbl_pct` | double | worst radiographic bone loss on the first radiograph read (simulated reading) |
 |  | `teeth_missing_at_entry_count` | bigint | teeth already missing at the first exam |
 |  | `tooth_type_code` | string | incisor · canine · premolar · molar, upper or lower |
 |  | `age_at_first_exam_num` | bigint | whole years from patient.birthdate to the first exam |
 |  | `is_smoker` | boolean | patient.smokingsnomed |
 |  | `is_diabetic` | boolean | a disease row with E10–E11 |
+
+### `radiograph_bone_level`
+
+SIMULATED: one per radiograph and tooth on it, read for bone loss; stands in for a radiograph-reading tool (Open Dental stores no reading). open_dental.build (simulated); overwrite per run, logged in load_log.
+
+| Key | Column | Type | Description |
+|---|---|---|---|
+| PK,FK | `document_id` | bigint | document.docnum: the radiograph |
+| PK | `tooth_num` | bigint | a tooth on the image |
+| FK | `patient_id` | bigint | patient.patnum |
+|  | `image_date` | date | document.datecreated |
+|  | `bone_loss_pct` | double | radiographic bone loss, % of root length; null when the tooth couldn't be read |
+|  | `is_simulated` | boolean | always true here: no real reading tool ran |
 
 ### `planned_extraction`
 

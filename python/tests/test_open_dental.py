@@ -171,7 +171,8 @@ def test_the_load_job_generates_and_loads_bronze_and_silver():
     assert "opendental_perio_data" in p["landing_dir"]
     nb = (ROOT / "databricks" / "notebooks" / "12_load_open_dental.py").read_text()
     for call in ("open_dental.write(", "open_dental.clean(", 'mode: str = "overwrite"', 'mode="append"',
-                 "open_dental.load_log(", "tooth_loss.tooth_table(clean)", "tooth_loss.planned_extraction(clean)"):
+                 "open_dental.load_log(", "tooth_loss.tooth_table(clean_read)", "tooth_loss.planned_extraction(clean)",
+                 '"radiograph_bone_level": readings'):
         assert call in nb, call
     # the Open Dental tables hold Open Dental's columns only; the batch key goes in load_log (AGENTS.md: every row
     # still traces to its run, through the one load_log row per run and table)
@@ -194,3 +195,76 @@ def test_the_load_log_records_each_table_written_with_its_batch_key():
     assert len(log) == len(tables) + 1
     row = log[log["table_name"] == "procedurelog"].iloc[0]
     assert row["row_count"] == len(tables["procedurelog"]) and row["run_id"] == "123"
+
+
+# ---------- US6 (#385): as messy as real practice records ----------
+NO_MESS = od.Params(n_patients=150, **od.NO_MESS)
+
+
+@pytest.fixture(scope="module")
+def messy():
+    return od.build_with_readings(od.Params(n_patients=600), seed=11)
+
+
+def test_build_is_build_with_readings_without_the_readings():
+    tables, truth = od.build(SMALL, seed=7)
+    again, truth2, readings = od.build_with_readings(SMALL, seed=7)
+    for name in tables:
+        pd.testing.assert_frame_equal(tables[name], again[name], obj=name)
+    pd.testing.assert_frame_equal(truth, truth2)
+    assert list(readings.columns) == [c.name for c in MODEL.TABLES["radiograph_bone_level"].columns]
+    assert readings["is_simulated"].all()
+
+
+def test_the_realism_profile_measures_the_declared_rates(messy):
+    tables, _, readings = messy
+    p = od.Params()
+    prof = od.realism_profile(tables, readings)
+    assert set(prof["metric_name"]) >= {"charted_visit_office_share", "charted_visit_site_share", "partial_chart_share",
+                                        "buccal_only_chart_share", "no_margin_chart_share", "no_bleeding_chart_share",
+                                        "copied_chart_share", "uniform_chart_share", "out_of_range_site_share",
+                                        "charted_after_loss_chart_share", "radiograph_visit_share",
+                                        "unread_tooth_share"}
+    got = dict(zip(prof["metric_name"], prof["value_ratio"]))
+    assert list(prof.columns) == ["metric_name", "value_ratio", "numerator_count", "denominator_count"]
+    assert abs(got["charted_visit_office_share"] - p.chart_office) < 0.04
+    assert abs(got["charted_visit_site_share"] - p.chart_site) < 0.12          # few patients live at sites
+    for metric, rate in (("partial_chart_share", p.partial_chart), ("buccal_only_chart_share", p.buccal_only),
+                         ("no_margin_chart_share", p.no_margin), ("no_bleeding_chart_share", p.no_bleeding),
+                         ("copied_chart_share", p.copied_chart), ("uniform_chart_share", p.uniform_chart),
+                         ("unread_tooth_share", p.reading_missing)):
+        assert abs(got[metric] - rate) < 0.05, metric
+    assert 0 < got["out_of_range_site_share"] < 0.01
+    assert got["charted_after_loss_chart_share"] > 0
+    assert 0.2 < got["radiograph_visit_share"] < 0.6
+
+
+def test_with_no_mess_every_visit_has_a_complete_chart():
+    tables, _, readings = od.build_with_readings(NO_MESS, seed=2)
+    prof = od.realism_profile(tables, readings)
+    got = dict(zip(prof["metric_name"], prof["value_ratio"]))
+    assert got["charted_visit_office_share"] == 1
+    assert pd.isna(got["charted_visit_site_share"]) or got["charted_visit_site_share"] == 1
+    for metric in ("partial_chart_share", "buccal_only_chart_share", "no_margin_chart_share", "no_bleeding_chart_share",
+                   "copied_chart_share", "uniform_chart_share", "out_of_range_site_share",
+                   "charted_after_loss_chart_share", "unread_tooth_share"):
+        assert got[metric] == 0, metric
+
+
+def test_every_radiograph_has_its_procedure_and_readings_only_for_its_teeth(messy):
+    t, _, readings = messy
+    docs = t["document"]
+    assert (docs["imgtype"] == od.IMG_RADIOGRAPH).all()
+    cats = t["definition"].query("category == @od.DEFCAT_IMAGECATS")
+    assert set(docs["doccategory"]) <= set(cats["defnum"])
+    pc = t["procedurecode"]
+    xray = set(pc.loc[pc["proccode"].isin(od.RADIOGRAPHS), "codenum"])
+    assert pc.loc[pc["proccode"].isin(od.RADIOGRAPHS), "isradiology"].all()
+    procs = t["procedurelog"][t["procedurelog"]["codenum"].isin(xray)]
+    done = set(zip(procs["patnum"], pd.to_datetime(procs["procdate"]).dt.normalize()))
+    assert set(zip(docs["patnum"], pd.to_datetime(docs["datecreated"]).dt.normalize())) <= done
+    assert len(docs) == len(procs)
+    on_image = {(d, int(n)) for d, nums in zip(docs["docnum"], docs["toothnumbers"]) for n in nums.split(",")}
+    assert set(zip(readings["document_id"], readings["tooth_num"])) == on_image
+    read = readings["bone_loss_pct"].dropna()
+    assert read.between(0, 95).all() and len(read) > 0

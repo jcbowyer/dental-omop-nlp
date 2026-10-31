@@ -16,7 +16,14 @@ What the extract carries, as Open Dental records it:
 - a planned procedure is copied into every plan saved at that exam (`treatplan`, `proctp`), and again at later exams
   while it stays planned; a few copies are edited;
 - perio charts store probing and gingival margin per site (never CAL), -1 for not measured, margins above the
-  cementoenamel junction as 100 + mm, and bleeding as bit 1 of a flag sum.
+  cementoenamel junction as 100 + mm, and bleeding as bit 1 of a flag sum;
+- records are messy, as real ones are (#385): many visits have no perio chart (more often at mobile and nursing-home
+  sites), some charts are partial (some teeth, buccal sites only, no margin, no bleeding), some are copied forward or
+  uniform, a few hold an out-of-range value or chart a tooth already extracted. Every rate is in `Params`, and
+  `NO_MESS` turns them all off. `realism_profile` measures the same rates from any extract in this format;
+- radiographs are procedures (D0210, D0274, D0330) with a `document` row each (ImgType 1). Open Dental stores no
+  reading of the image, so `build_with_readings` also returns a SIMULATED reading per tooth on each radiograph
+  (`radiograph_bone_level`), standing in for a radiograph-reading tool; it is never an Open Dental table.
 
 Why each tooth was lost (`tooth_loss_truth`) is returned apart from the extract and written to another folder: the
 evaluation reads it, the extract never carries it.
@@ -74,15 +81,18 @@ TABLES = {
     "ehrmeasureevent": ["ehrmeasureeventnum", "datetevent", "eventtype", "patnum", "moreinfo", "codevalueresult",
                         "datestarttobacco", "tobaccocessationdesire"],
     "patfield": ["patfieldnum", "patnum", "fieldname", "fieldvalue"],
+    "document": ["docnum", "patnum", "datecreated", "doccategory", "imgtype", "toothnumbers", "description", "filename"],
     "snomed": ["snomednum", "snomedcode", "description"],
 }
-DATES = {"birthdate", "datefirstvisit", "admitdate", "datetimedeceased", "procdate", "datetp", "datecomplete",
+DATES = {"datecreated", "birthdate", "datefirstvisit", "admitdate", "datetimedeceased", "procdate", "datetp", "datecomplete",
          "examdate", "datestart", "datestop", "aptdatetime", "datetimesheet", "datetaken", "entrydatetime",
          "datetevent", "datestarttobacco"}
 
 # Open Dental enum values (OpenDentBusiness, release 24_3): DefCat, ProcStat, SheetTypeEnum, EhrMeasureEventType,
 # SnomedAllergy, PlaceOfService, PerioSequenceType
-DEFCAT_PROCCODECATS, DEFCAT_DIAGNOSIS, DEFCAT_TXPRIORITIES, DEFCAT_PROGNOSIS, DEFCAT_SPECIALTIES = 11, 16, 20, 30, 35
+DEFCAT_PROCCODECATS, DEFCAT_DIAGNOSIS, DEFCAT_IMAGECATS, DEFCAT_TXPRIORITIES, DEFCAT_PROGNOSIS, DEFCAT_SPECIALTIES = \
+    11, 16, 18, 20, 30, 35
+IMG_RADIOGRAPH = 1                          # document.ImgType
 PLANNED, COMPLETE, EXISTING_OTHER = 1, 2, 4
 SHEET_EXAM, TOBACCO_ASSESSED, DRUG_ALLERGY = 13, 8, 2
 POS_OFFICE, POS_NURSING, POS_MOBILE, POS_SCHOOL = 0, 4, 7, 8
@@ -106,7 +116,12 @@ PROCEDURE_CODES = [  # code, our short description, abbreviation, treat area, ca
     ("D4910", "Periodontal maintenance", "PMaint", 3, "Periodontics", True, 140.0),
     ("D7140", "Extraction, erupted tooth", "Ext", 2, "Oral Surgery", False, 170.0),
     ("D7210", "Extraction, surgical", "ExtSurg", 2, "Oral Surgery", False, 290.0),
+    ("D0210", "Intraoral, complete series of radiographic images", "FMX", 3, "Radiographs", False, 130.0),
+    ("D0274", "Bitewings, four radiographic images", "4BW", 3, "Radiographs", False, 65.0),
+    ("D0330", "Panoramic radiographic image", "Pano", 3, "Radiographs", False, 110.0),
 ]
+RADIOGRAPHS = ("D0210", "D0274", "D0330")
+BITEWING_TEETH = {2, 3, 4, 5, 12, 13, 14, 15, 18, 19, 20, 21, 28, 29, 30, 31}
 EXTRACTIONS = ("D7140", "D7210")
 SNOMED_SMOKING = {"266919005": "Never smoked tobacco", "8517006": "Ex-smoker",
                   "449868002": "Smokes tobacco daily", "428041000124106": "Occasional tobacco smoker"}
@@ -144,6 +159,28 @@ class Params:
     n_hygienists: int = 6
     sites: tuple = field(default=(("Maple Grove Nursing Home", POS_NURSING), ("Lakeside School", POS_SCHOOL),
                                   ("Riverview Care Center", POS_NURSING), ("Mobile Unit 1", POS_MOBILE)))
+    # how messy the records are (#385): invented defaults, to be set from a real extract's realism_profile
+    chart_office: float = 0.75                # a visit at an office gets a perio chart
+    chart_site: float = 0.30                  # a visit at a mobile or nursing-home site does
+    partial_chart: float = 0.20               # a chart covers only some of the teeth present (40-80%)
+    buccal_only: float = 0.10                 # a chart records the buccal sites only
+    no_margin: float = 0.25                   # a chart has no gingival margins, so no CAL
+    no_bleeding: float = 0.15                 # a chart has no bleeding
+    copied_chart: float = 0.08                # a chart is the last one copied forward
+    uniform_chart: float = 0.05               # every site the same depth
+    out_of_range_site: float = 0.002          # a probing site entered as 16-19 mm
+    charted_after_loss: float = 0.03          # a chart includes a tooth already extracted in the record
+    fmx_first: float = 0.6                    # a full-mouth series at the first visit
+    bitewing_per_visit: float = 0.35          # bitewings at a later visit
+    pano_per_visit: float = 0.03              # a panoramic image at a later visit
+    reading_missing: float = 0.15             # a tooth on a radiograph that the (simulated) reading leaves unread
+
+
+# every mess rate at zero: a complete chart at every visit, every radiograph read
+NO_MESS = {"chart_office": 1.0, "chart_site": 1.0, "partial_chart": 0.0, "buccal_only": 0.0, "no_margin": 0.0,
+           "no_bleeding": 0.0, "copied_chart": 0.0, "uniform_chart": 0.0, "out_of_range_site": 0.0,
+           "charted_after_loss": 0.0, "reading_missing": 0.0}
+READING_COLUMNS = ["document_id", "tooth_num", "patient_id", "image_date", "bone_loss_pct", "is_simulated"]
 
 
 class _Rows:
@@ -183,6 +220,14 @@ def _adoption(d: date, p: Params) -> float:
 def build(p: Params | None = None, seed: int = 42) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
     """The extract, {table: DataFrame} with TABLES' columns, and the truth (patient_id, tooth_num, true_reason_code).
     Its own random stream, so the study datasets and the global random state don't change."""
+    tables, truth, _ = build_with_readings(p, seed)
+    return tables, truth
+
+
+@traced
+def build_with_readings(p: Params | None = None, seed: int = 42) -> tuple[dict[str, pd.DataFrame], pd.DataFrame,
+                                                                            pd.DataFrame]:
+    """`build`, plus the SIMULATED radiograph reading (READING_COLUMNS): one row per radiograph and tooth on it."""
     p = p or Params()
     rng = random.Random(f"{seed}:open_dental")
     r = _Rows()
@@ -196,12 +241,15 @@ def build(p: Params | None = None, seed: int = 42) -> tuple[dict[str, pd.DataFra
     dx_new = defs(DEFCAT_DIAGNOSIS, [(n, a, False) for n, a, _ in LIST_2017])
     prognosis = defs(DEFCAT_PROGNOSIS, [(n, "", False) for n in ("Good", "Fair", "Questionable", "Poor", "Hopeless")])
     priority = defs(DEFCAT_TXPRIORITIES, [(n, "", False) for n in ("1", "2", "3")])
-    proccat = defs(DEFCAT_PROCCODECATS, [(n, "", False) for n in ("Exams", "Cleanings", "Periodontics", "Oral Surgery")])
+    proccat = defs(DEFCAT_PROCCODECATS, [(n, "", False) for n in ("Exams", "Cleanings", "Periodontics", "Oral Surgery",
+                                                                   "Radiographs")])
     specialty = defs(DEFCAT_SPECIALTIES, [(n, "", False) for n in ("General", "Hygienist", "Periodontist")])
+    image_cat = defs(DEFCAT_IMAGECATS, [(n, "", False) for n in ("Radiographs", "Photos", "Documents")])
+    readings: list[tuple] = []
     code = {}
     for c, desc, abbr, area, cat, hyg, fee in PROCEDURE_CODES:
         code[c] = (r("procedurecode", proccode=c, descript=desc, abbrdesc=abbr, treatarea=area,
-                         proccat=proccat[cat], isprosth=False, ishygiene=hyg, medicalcode="", isradiology=False),
+                         proccat=proccat[cat], isprosth=False, ishygiene=hyg, medicalcode="", isradiology=c in RADIOGRAPHS),
                    desc, abbr, fee)
     clinics = [r("clinic", description=f"Synthetic Dental Clinic {chr(65 + i)}", abbr=f"Clinic {chr(65 + i)}",
                      address=f"{100 + 10 * i} Example Avenue", address2="", city="Exampletown", state="ZZ",
@@ -318,6 +366,8 @@ def build(p: Params | None = None, seed: int = 42) -> tuple[dict[str, pd.DataFra
         cal_tooth = {t: max(base[(t, s)][1] for s in SITES) for t in present}
         planned_open: list[dict] = []       # planned extractions not completed yet, with what a copy needs
         treated = False
+        last_chart: dict[int, tuple] = {}   # the last chart recorded, for copying forward
+        extracted: set[int] = set()         # teeth extracted in the record so far
         for k, d in enumerate(dates):
             chart = hist[k].chart
             apt = r("appointment", patnum=pat, provnum=dentist, provhyg=hyg,
@@ -342,16 +392,18 @@ def build(p: Params | None = None, seed: int = 42) -> tuple[dict[str, pd.DataFra
             else:
                 done("D1110")
 
-            # perio chart: probing, gingival margin, bleeding, mobility and furcation for the teeth present today
-            exam = r("perioexam", patnum=pat, examdate=d, provnum=hyg)
+            # the mouth today, whether or not anyone charts it: probing, margin and bleeding per site
             grow = max(0.0, chart.max_cal_mm - chart0.max_cal_mm)
             pd_grow = chart.max_probing_depth_mm - chart0.max_probing_depth_mm
+            today_chart: dict[int, tuple] = {}
+            true_cal: dict[int, float] = {}
             for t in sorted(present):
-                probing, margin, bleed = [], [], []
+                probing, margin, bleed, cals = [], [], [], []
                 for s in SITES:
                     pd0, cal0, _ = base[(t, s)]
                     cal = cal0 + (grow * rng.uniform(0.3, 1.0) if cal0 >= 1 else 0)
-                    depth = max(1, round(pd0 + pd_grow * rng.uniform(0.2, 1.0)))
+                    cals.append(cal)
+                    depth = max(1, round(pd0 + pd_grow * rng.uniform(0.2, 1.0) + rng.gauss(0, 0.5)))  # ±1 mm
                     if rng.random() < 0.01:
                         depth = -1                                   # not measured
                     rec = round(cal) - depth if depth > 0 else -1
@@ -359,15 +411,65 @@ def build(p: Params | None = None, seed: int = 42) -> tuple[dict[str, pd.DataFra
                     margin.append(-1 if depth < 0 else (100 + abs(rec) if rec < 0 else rec))
                     flags = (1 if rng.random() < chart.bop_pct / 100 else 0) | (4 if rng.random() < 0.3 else 0)
                     bleed.append(flags)
-                for seq, vals in ((SEQ_PROBING, probing), (SEQ_MARGIN, margin), (SEQ_BLEEDING, bleed)):
-                    r("periomeasure", perioexamnum=exam, sequencetype=seq, inttooth=t, toothvalue=-1,
-                          **dict(zip(["mbvalue", "bvalue", "dbvalue", "mlvalue", "lvalue", "dlvalue"], vals)))
-                r("periomeasure", perioexamnum=exam, sequencetype=SEQ_MOBILITY, inttooth=t,
-                      toothvalue=int(mobility.get(t, 0)), mbvalue=-1, bvalue=-1, dbvalue=-1, mlvalue=-1, lvalue=-1,
-                      dlvalue=-1)
-                if t in MOLARS and furcation.get(t, 0):
-                    r("periomeasure", perioexamnum=exam, sequencetype=SEQ_FURCATION, inttooth=t, toothvalue=-1,
-                          mbvalue=-1, bvalue=int(furcation[t]), dbvalue=-1, mlvalue=-1, lvalue=-1, dlvalue=-1)
+                today_chart[t] = (probing, margin, bleed)
+                true_cal[t] = max(cals)
+
+            # perio chart, as messy as real ones (#385): not done, partial, copied, uniform, out of range
+            if rng.random() < (p.chart_site if site else p.chart_office):
+                exam = r("perioexam", patnum=pat, examdate=d, provnum=hyg)
+                charted = sorted(present)
+                if rng.random() < p.partial_chart and len(charted) > 4:
+                    charted = sorted(rng.sample(charted, max(1, round(len(charted) * rng.uniform(0.4, 0.8)))))
+                copied = bool(last_chart) and rng.random() < p.copied_chart
+                uniform = not copied and rng.random() < p.uniform_chart
+                buccal = rng.random() < p.buccal_only
+                margins, bleeding = rng.random() >= p.no_margin, rng.random() >= p.no_bleeding
+                if extracted and rng.random() < p.charted_after_loss:
+                    charted = sorted({*charted, rng.choice(sorted(extracted))})
+                recorded = {}
+                for t in charted:
+                    if copied and t in last_chart:
+                        probing, margin, bleed = (list(v) for v in last_chart[t])
+                    elif t in today_chart:
+                        probing, margin, bleed = (list(v) for v in today_chart[t])
+                    else:                                            # a tooth already extracted, charted anyway
+                        probing, margin, bleed = [rng.randint(2, 4)] * 6, [0] * 6, [0] * 6
+                    if uniform:
+                        probing, margin = [3] * 6, [0] * 6
+                    probing = [rng.randint(16, 19) if v > 0 and rng.random() < p.out_of_range_site else v
+                               for v in probing]
+                    if buccal:
+                        probing, margin, bleed = probing[:3] + [-1] * 3, margin[:3] + [-1] * 3, bleed[:3] + [-1] * 3
+                    recorded[t] = (probing, margin, bleed)
+                    rows = [(SEQ_PROBING, probing)] + ([(SEQ_MARGIN, margin)] if margins else []) + \
+                        ([(SEQ_BLEEDING, bleed)] if bleeding else [])
+                    for seq, vals in rows:
+                        r("periomeasure", perioexamnum=exam, sequencetype=seq, inttooth=t, toothvalue=-1,
+                              **dict(zip(SITE_VALUES, vals)))
+                    r("periomeasure", perioexamnum=exam, sequencetype=SEQ_MOBILITY, inttooth=t,
+                          toothvalue=int(mobility.get(t, 0)), mbvalue=-1, bvalue=-1, dbvalue=-1, mlvalue=-1,
+                          lvalue=-1, dlvalue=-1)
+                    if t in MOLARS and furcation.get(t, 0):
+                        r("periomeasure", perioexamnum=exam, sequencetype=SEQ_FURCATION, inttooth=t, toothvalue=-1,
+                              mbvalue=-1, bvalue=int(furcation[t]), dbvalue=-1, mlvalue=-1, lvalue=-1, dlvalue=-1)
+                last_chart = recorded
+
+            # radiographs: a full-mouth series at the first visit, bitewings or a panoramic image later; each a
+            # procedure and an image, and a SIMULATED reading of bone loss for each tooth on it
+            kind = ("D0210" if k == 0 and rng.random() < p.fmx_first else
+                    "D0274" if k and rng.random() < p.bitewing_per_visit else
+                    "D0330" if k and rng.random() < p.pano_per_visit else None)
+            on_image = sorted(present & BITEWING_TEETH) if kind == "D0274" else sorted(present)
+            if kind and on_image:
+                done(kind)
+                docnum = r("document", patnum=pat, datecreated=datetime.combine(d, datetime.min.time()) +
+                           timedelta(hours=9), doccategory=image_cat["Radiographs"], imgtype=IMG_RADIOGRAPH,
+                           toothnumbers=",".join(map(str, on_image)), description=code[kind][1],
+                           filename=f"img_{pat}_{k}.dcm")
+                for t in on_image:
+                    bone = None if rng.random() < p.reading_missing else \
+                        round(min(95.0, max(0.0, (true_cal[t] - 1.5) / 12 * 100 + rng.gauss(0, 6))), 1)
+                    readings.append((docnum, t, pat, d, bone, True))
 
             sheet = r("sheet", sheettype=SHEET_EXAM, patnum=pat,
                           datetimesheet=datetime.combine(d, datetime.min.time()), description="Oral Exam Form",
@@ -436,6 +538,7 @@ def build(p: Params | None = None, seed: int = 42) -> tuple[dict[str, pd.DataFra
             for o in [o for o in planned_open if o["completes"] is not None and o["completes"] <= dates[min(k + 1, n_vis - 1)]]:
                 o["row"].update(procstatus=COMPLETE, procdate=o["completes"], datecomplete=o["completes"])
                 present.discard(o["tooth"])
+                extracted.add(o["tooth"])
                 planned_open.remove(o)
                 if rng.random() < 0.7:
                     r("procnote", patnum=pat, procnum=o["proc"],
@@ -446,7 +549,9 @@ def build(p: Params | None = None, seed: int = 42) -> tuple[dict[str, pd.DataFra
     frames = _frames(r)
     t = pd.DataFrame([(pat, tooth, reason) for (pat, tooth), reason in sorted(truth.items())],
                      columns=["patient_id", "tooth_num", "true_reason_code"])
-    return frames, t
+    reads = pd.DataFrame(readings, columns=READING_COLUMNS).astype({"bone_loss_pct": "float64", "is_simulated": bool})
+    reads["image_date"] = pd.to_datetime(reads["image_date"])
+    return frames, t, reads
 
 
 @traced
@@ -503,6 +608,111 @@ def clean(tables: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
                 v = v.mask(margin, 100 - v)
             pm[c] = v.mask(v == -1)
     return out
+
+
+def _numeric(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    out = df.copy()
+    for c in cols:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+    return out
+
+
+@traced
+def chart_quality(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """One row per perio exam: what it charted and how well, measured from the extract alone (raw or cleaned).
+    Partial: fewer than 90% of the teeth the record says are present. Copied: every probing value the same as the
+    patient's previous chart, on at least 4 teeth. Uniform: one depth at every site. Out of range: a depth over 15 mm."""
+    ex = _numeric(tables["perioexam"], ["perioexamnum", "patnum"])
+    ex["examdate"] = pd.to_datetime(ex["examdate"])
+    pm = _numeric(tables["periomeasure"], ["perioexamnum", "sequencetype", "inttooth", *SITE_VALUES])
+    for c in SITE_VALUES:
+        pm[c] = pm[c].where(pm[c] != -1)
+    probe = pm[pm["sequencetype"] == SEQ_PROBING]
+    vals = probe[SITE_VALUES]
+    per = pd.DataFrame({"perioexamnum": probe["perioexamnum"], "inttooth": probe["inttooth"],
+                        "sites": vals.notna().sum(axis=1), "lingual": vals[SITE_VALUES[3:]].notna().sum(axis=1),
+                        "over": (vals > 15).sum(axis=1), "lo": vals.min(axis=1), "hi": vals.max(axis=1)})
+    g = per.groupby("perioexamnum")
+    q = pd.DataFrame({"teeth_charted_count": g["inttooth"].nunique(), "site_count": g["sites"].sum(),
+                      "out_of_range_count": g["over"].sum(), "lingual_count": g["lingual"].sum(),
+                      "lo": g["lo"].min(), "hi": g["hi"].max()})
+    has = pm.groupby(["perioexamnum", "sequencetype"]).size().unstack(fill_value=0)
+    q["has_margin"] = has.get(SEQ_MARGIN, pd.Series(dtype=int)).reindex(q.index).fillna(0).gt(0)
+    q["has_bleeding"] = has.get(SEQ_BLEEDING, pd.Series(dtype=int)).reindex(q.index).fillna(0).gt(0)
+    q = ex.merge(q, left_on="perioexamnum", right_index=True, how="left")
+    q["teeth_charted_count"] = q["teeth_charted_count"].fillna(0).astype(int)
+    q["has_margin"] = q["has_margin"].astype("boolean").fillna(False).astype(bool)
+    q["has_bleeding"] = q["has_bleeding"].astype("boolean").fillna(False).astype(bool)
+    q["is_buccal_only"] = (q["site_count"] > 0) & (q["lingual_count"] == 0)
+    q["is_uniform"] = (q["site_count"] >= 6) & (q["lo"] == q["hi"])
+
+    # teeth the record says are present at each exam: 32, less those missing at entry and those extracted before it
+    pl = _numeric(tables["procedurelog"], ["patnum", "procstatus", "codenum", "toothnum"])
+    ext = pl[pl["codenum"].isin(extraction_codenums(tables)) & pl["toothnum"].between(1, 32)]
+    ti = _numeric(tables["toothinitial"], ["patnum", "toothnum", "initialtype"])
+    entry = pd.concat([ti.loc[ti["initialtype"] == 0, ["patnum", "toothnum"]],
+                       ext.loc[ext["procstatus"] == EXISTING_OTHER, ["patnum", "toothnum"]]]).drop_duplicates()
+    done = ext.loc[ext["procstatus"] == COMPLETE, ["patnum", "toothnum", "datecomplete"]].copy()
+    done["datecomplete"] = pd.to_datetime(done["datecomplete"])
+    n_entry = entry.groupby("patnum").size()
+    lost = q[["perioexamnum", "patnum", "examdate"]].merge(done, on="patnum")
+    lost = lost[lost["datecomplete"] < lost["examdate"]]
+    q["expected_teeth_count"] = 32 - q["patnum"].map(n_entry).fillna(0).astype(int) - \
+        q["perioexamnum"].map(lost.groupby("perioexamnum").size()).fillna(0).astype(int)
+    q["is_partial"] = (q["teeth_charted_count"] > 0) & (q["teeth_charted_count"] < 0.9 * q["expected_teeth_count"])
+    after = lost.merge(probe[["perioexamnum", "inttooth"]].drop_duplicates(),
+                       left_on=["perioexamnum", "toothnum"], right_on=["perioexamnum", "inttooth"])
+    q["charted_after_loss_count"] = q["perioexamnum"].map(after.groupby("perioexamnum").size()).fillna(0).astype(int)
+
+    # copied: the same probing values as the patient's previous chart, tooth by tooth
+    q = q.sort_values(["patnum", "examdate", "perioexamnum"]).reset_index(drop=True)
+    q["previous_exam"] = q.groupby("patnum")["perioexamnum"].shift()
+    key = probe.set_index(["perioexamnum", "inttooth"])[SITE_VALUES]
+    a = q.dropna(subset=["previous_exam"])[["perioexamnum", "previous_exam"]].astype("int64")
+    now = key.reset_index().merge(a, on="perioexamnum")
+    before = key.reset_index().rename(columns={"perioexamnum": "previous_exam"})
+    both = now.merge(before, on=["previous_exam", "inttooth"], suffixes=("", "_prev"))
+    same = pd.concat([(both[c].fillna(-1) == both[f"{c}_prev"].fillna(-1)) for c in SITE_VALUES], axis=1).all(axis=1)
+    agg = both.assign(same=same).groupby("perioexamnum").agg(n=("same", "size"), all_same=("same", "all"))
+    copied = agg[(agg["n"] >= 4) & agg["all_same"]].index
+    q["has_previous"] = q["previous_exam"].notna()
+    q["is_copied"] = q["perioexamnum"].isin(copied) & ~q["is_uniform"]
+    return q[["perioexamnum", "patnum", "examdate", "teeth_charted_count", "expected_teeth_count", "site_count",
+              "out_of_range_count", "charted_after_loss_count", "has_margin", "has_bleeding", "has_previous",
+              "is_partial", "is_buccal_only", "is_copied", "is_uniform"]]
+
+
+@traced
+def realism_profile(tables: dict[str, pd.DataFrame], readings: pd.DataFrame | None = None) -> pd.DataFrame:
+    """How messy an extract is, as the shares `Params` sets: one row per metric, counts only (no row-level data), so it
+    can be run on a real extract in this format and its numbers used as the generator's parameters."""
+    q = chart_quality(tables)
+    pat = _numeric(tables["patient"], ["patnum", "sitenum"])
+    apt = _numeric(tables["appointment"], ["patnum"])
+    apt["day"] = pd.to_datetime(apt["aptdatetime"]).dt.normalize()
+    charted = set(zip(q["patnum"], q["examdate"].dt.normalize()))
+    apt["charted"] = [k in charted for k in zip(apt["patnum"], apt["day"])]
+    at_site = apt["patnum"].map(dict(zip(pat["patnum"], pat["sitenum"].fillna(0) != 0))).fillna(False)
+    rows = []
+
+    def add(name, num, den):
+        rows.append((name, num / den if den else float("nan"), int(num), int(den)))
+
+    add("charted_visit_office_share", apt.loc[~at_site, "charted"].sum(), (~at_site).sum())
+    add("charted_visit_site_share", apt.loc[at_site, "charted"].sum(), at_site.sum())
+    for name, col in (("partial_chart_share", "is_partial"), ("buccal_only_chart_share", "is_buccal_only"),
+                      ("uniform_chart_share", "is_uniform")):
+        add(name, q[col].sum(), len(q))
+    add("no_margin_chart_share", (~q["has_margin"]).sum(), len(q))
+    add("no_bleeding_chart_share", (~q["has_bleeding"]).sum(), len(q))
+    add("copied_chart_share", q["is_copied"].sum(), q["has_previous"].sum())
+    add("out_of_range_site_share", q["out_of_range_count"].sum(), q["site_count"].sum())
+    add("charted_after_loss_chart_share", (q["charted_after_loss_count"] > 0).sum(), len(q))
+    docs = tables["document"]
+    add("radiograph_visit_share", (_numeric(docs, ["imgtype"])["imgtype"] == IMG_RADIOGRAPH).sum(), len(apt))
+    if readings is not None:
+        add("unread_tooth_share", readings["bone_loss_pct"].isna().sum(), len(readings))
+    return pd.DataFrame(rows, columns=["metric_name", "value_ratio", "numerator_count", "denominator_count"])
 
 
 @traced

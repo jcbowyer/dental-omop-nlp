@@ -29,6 +29,9 @@ erDiagram
     cdcrec ||--o{ patientrace : "cdcreccode"
     site |o--o{ patient : "sitenum"
     procedurelog ||--o{ procnote : "procnum"
+    patient ||--o{ document : "patnum"
+    definition ||--o{ document : "defnum = doccategory (category 18)"
+    document ||--o{ radiograph_bone_level : "docnum = document_id (ImgType 1)"
     patient ||--o{ ehrmeasureevent : "patnum"
     snomed |o..o{ ehrmeasureevent : "codevalueresult = snomedcode"
     patient ||--o{ patfield : "patnum"
@@ -63,10 +66,12 @@ erDiagram
     cdcrec
     site
     procnote
+    document
     ehrmeasureevent
     patfield
     snomed
     patient_tooth
+    radiograph_bone_level
     planned_extraction
     tooth_loss_dq_check
     tooth_loss_truth

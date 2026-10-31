@@ -261,6 +261,16 @@ TABLES = {
         C("entrydatetime", "timestamp", "when written"),
         C("note", "string", "the clinical note"),
     ]),
+    "document": Table("source", "One per image in a patient's folder; radiographs are ImgType 1", "tooth_loss_load: overwrite per run", [
+        C("docnum", "bigint", "key", "PK"),
+        C("patnum", "bigint", "patient", "FK"),
+        C("datecreated", "timestamp", "when the image was taken"),
+        C("doccategory", "bigint", "image folder (definition category 18)", "FK"),
+        C("imgtype", "bigint", "0 document · 1 radiograph · 2 photo · 3 file · 4 attachment"),
+        C("toothnumbers", "string", "teeth on the image, comma separated"),
+        C("description", "string", "free text about the image"),
+        C("filename", "string", "the image file's name"),
+    ]),
     "ehrmeasureevent": Table("source", "One per measure event, e.g. a tobacco use assessment", "tooth_loss_load: overwrite per run", [
         C("ehrmeasureeventnum", "bigint", "key", "PK"),
         C("datetevent", "timestamp", "when"),
@@ -291,20 +301,32 @@ TABLES = {
         C("label_source_code", "string", "completed · planned · none: which record gave the label"),
         C("dx_def_id", "bigint", "the mapped diagnosis item (definition.defnum)", "FK"),
         C("is_perio_loss", "boolean", "the label: diagnosis maps to periodontal; null when no diagnosis"),
-        C("last_exam_date", "date", "last perio exam before the loss"),
+        C("last_exam_date", "date", "last perio exam that charted the tooth, on or before the loss"),
         C("last_max_pd_mm", "double", "the tooth's own deepest probing before the loss"),
         C("last_max_cal_mm", "double", "own CAL = probing + gingival margin, before the loss"),
         C("last_bop_pct", "double", "own sites bleeding, 0–100"),
         C("last_mobility_code", "string", "own mobility grade 0–3"),
+        C("last_chart_quality_code", "string", "the last chart that charted the tooth: complete · partial · copied · uniform"),
+        C("last_rbl_pct", "double", "own radiographic bone loss on the last radiograph read before the loss (simulated reading)"),
+        C("last_radiograph_date", "date", "that radiograph's date"),
         C("neighbour_max_cal_mm", "double", "worst CAL on the teeth either side"),
         C("mouth_cal5_site_pct", "double", "sites with CAL ≥ 5 mm at the first exam, 0–100"),
         C("mouth_max_pd_mm", "double", "deepest probing in the mouth at the first exam"),
         C("mouth_bop_pct", "double", "sites bleeding in the mouth at the first exam, 0–100"),
+        C("mouth_max_rbl_pct", "double", "worst radiographic bone loss on the first radiograph read (simulated reading)"),
         C("teeth_missing_at_entry_count", "bigint", "teeth already missing at the first exam"),
         C("tooth_type_code", "string", "incisor · canine · premolar · molar, upper or lower"),
         C("age_at_first_exam_num", "bigint", "whole years from patient.birthdate to the first exam"),
         C("is_smoker", "boolean", "patient.smokingsnomed"),
         C("is_diabetic", "boolean", "a disease row with E10–E11"),
+    ]),
+    "radiograph_bone_level": Table("derived", "SIMULATED: one per radiograph and tooth on it, read for bone loss; stands in for a radiograph-reading tool (Open Dental stores no reading)", "open_dental.build (simulated); overwrite per run, logged in load_log", [
+        C("document_id", "bigint", "document.docnum: the radiograph", "PK,FK"),
+        C("tooth_num", "bigint", "a tooth on the image", "PK"),
+        C("patient_id", "bigint", "patient.patnum", "FK"),
+        C("image_date", "date", "document.datecreated"),
+        C("bone_loss_pct", "double", "radiographic bone loss, % of root length; null when the tooth couldn't be read"),
+        C("is_simulated", "boolean", "always true here: no real reading tool ran"),
     ]),
     "planned_extraction": Table("derived", "One per planned extraction in procedurelog, however many plan copies carry it", "tooth_loss.planned_extraction; overwrite per run, logged in load_log", [
         C("procedure_id", "bigint", "procedurelog.procnum", "PK,FK"),
@@ -368,6 +390,9 @@ RELATIONSHIPS = [
     R("cdcrec", "patientrace", ("cdcreccode",), ("cdcreccode",), "cdcreccode"),
     R("site", "patient", ("sitenum",), ("sitenum",), "sitenum", "|o--o{"),
     R("procedurelog", "procnote", ("procnum",), ("procnum",), "procnum"),
+    R("patient", "document", ("patnum",), ("patnum",), "patnum"),
+    R("definition", "document", ("defnum",), ("doccategory",), "defnum = doccategory (category 18)"),
+    R("document", "radiograph_bone_level", ("docnum",), ("document_id",), "docnum = document_id (ImgType 1)", derived=True),
     R("patient", "ehrmeasureevent", ("patnum",), ("patnum",), "patnum"),
     R("snomed", "ehrmeasureevent", ("snomedcode",), ("codevalueresult",), "codevalueresult = snomedcode", "|o..o{", derived=True),
     R("patient", "patfield", ("patnum",), ("patnum",), "patnum"),
@@ -404,13 +429,14 @@ GROUPS = [
     ("Location", 2, ["clinic", "site"]),
     ("Perio Charting", 3, ["perioexam", "periomeasure"]),
     ("Treatment Planning", 3, ["proctp", "treatplan"]),
-    ("Procedures", 3, ["procedurelog", "procedurecode", "procnote"]),
-    ("Tooth loss (spec 029)", 4, ["patient_tooth", "planned_extraction"]),
+    ("Procedures", 3, ["procedurelog", "procedurecode", "procnote", "document"]),
+    ("Tooth loss (spec 029)", 4, ["patient_tooth", "planned_extraction", "radiograph_bone_level"]),
     ("Data quality", 4, ["tooth_loss_dq_check"]),
     ("Answer key (evaluation only)", 4, ["tooth_loss_truth"]),
 ]
 KINDS = {t: "fact" for t in ("procedurelog", "treatplan", "proctp", "perioexam", "periomeasure", "toothinitial",
-                             "disease", "patient_tooth", "planned_extraction", "tooth_loss_dq_check", "tooth_loss_truth")}
+                             "disease", "patient_tooth", "planned_extraction", "tooth_loss_dq_check", "tooth_loss_truth",
+                             "document", "radiograph_bone_level")}
 KINDS |= {t: "fact" for t in ("appointment", "medicationpat", "allergy", "sheet", "sheetfield", "vitalsign",
                               "patientrace", "procnote", "ehrmeasureevent", "patfield")}
 KINDS |= {t: "dimension" for t in ("patient", "clinic", "procedurecode", "definition", "diseasedef", "provider",
@@ -419,7 +445,8 @@ KINDS |= {t: "dimension" for t in ("patient", "clinic", "procedurecode", "defini
 PHI = {("patient", "birthdate"), ("patient", "zip"), ("patient", "medurgnote"), ("patient", "datetimedeceased"),
        ("proctp", "descript"), ("treatplan", "signature"), ("disease", "patnote"),
        ("medicationpat", "patnote"), ("allergy", "reaction"), ("sheetfield", "fieldvalue"), ("procnote", "note"),
-       ("ehrmeasureevent", "moreinfo"), ("site", "note")}
+       ("ehrmeasureevent", "moreinfo"), ("site", "note"),
+       ("document", "description"), ("document", "filename")}
 # open questions and issues, shown in red: what to check before trusting the column
 QUESTIONS = {
     ("procedurelog", "diagnosticcode"): "rare: only on medical claims; never the label",

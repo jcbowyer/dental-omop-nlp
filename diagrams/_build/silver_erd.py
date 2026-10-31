@@ -36,8 +36,9 @@ def extract_stats():
     from health_transformation_lab_nlp import open_dental, tooth_loss
 
     import table_profile
-    tables, truth = open_dental.build(open_dental.Params(), seed=42)
+    tables, truth, readings = open_dental.build_with_readings(open_dental.Params(), seed=42)
     frames = open_dental.clean(tables)
+    frames["radiograph_bone_level"] = readings
     frames["patient_tooth"] = tooth_loss.tooth_table(frames)
     frames["planned_extraction"] = tooth_loss.planned_extraction(frames)
     frames["tooth_loss_truth"] = truth

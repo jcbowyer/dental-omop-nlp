@@ -6,7 +6,8 @@
 # MAGIC - **bronze** (`bronze_opendental_perio`): every Open Dental table as generated, one table each;
 # MAGIC - **silver** (`silver_opendental_perio`): the same tables read the way Open Dental means them
 # MAGIC   (`open_dental.clean`: -1 is null, gingival margins of 100+ are negative), the tooth tables derived from
-# MAGIC   them (`tooth_loss.tooth_table` → `patient_tooth`, `tooth_loss.planned_extraction` → `planned_extraction`),
+# MAGIC   them (`tooth_loss.tooth_table` → `patient_tooth`, `tooth_loss.planned_extraction` → `planned_extraction`), the
+# MAGIC   SIMULATED radiograph reading `radiograph_bone_level` (Open Dental stores none),
 # MAGIC   and the answer key `tooth_loss_truth`, which only the evaluation reads.
 # MAGIC
 # MAGIC Every table is overwritten per run (idempotent) and keeps Open Dental's columns only. Each run appends one
@@ -72,11 +73,14 @@ def save(df: pd.DataFrame, schema: str, name: str, mode: str = "overwrite") -> N
     print(f"{catalog}.{schema}.{name}: {len(df):,} rows")
 
 
-tables, truth = open_dental.build(params, seed)
+tables, truth, readings = open_dental.build_with_readings(params, seed)
 clean = open_dental.clean(tables)
-# the derived tooth tables (spec 029 US2): one row per patient and tooth, and one per planned extraction
-silver_tables = {**clean, "patient_tooth": tooth_loss.tooth_table(clean),
+# the SIMULATED radiograph reading (#385; Open Dental stores none), then the derived tooth tables (spec 029 US2): one
+# row per patient and tooth, and one per planned extraction
+clean_read = {**clean, "radiograph_bone_level": readings}
+silver_tables = {**clean, "radiograph_bone_level": readings, "patient_tooth": tooth_loss.tooth_table(clean_read),
                  "planned_extraction": tooth_loss.planned_extraction(clean), "tooth_loss_truth": truth}
+print(open_dental.realism_profile(tables, readings).to_string(index=False))
 for name, df in tables.items():
     save(df, bronze, name)
 for name, df in silver_tables.items():

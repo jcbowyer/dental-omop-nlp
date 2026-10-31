@@ -198,6 +198,42 @@ weighed against a common model.
 **Independent Test**: every Open Dental column in the declaration is in [research.md](research.md); every
 relationship joins declared columns; every OMOP column names its source; the generated files are current.
 
+### User Story 6 - The synthetic extract is as messy as real practice records (Priority: P1) #385
+
+Real records are incomplete. Many visits have no full perio chart, some charts are partial or of poor quality, and
+radiographs are often what's left to judge bone loss. A model that does well on a clean synthetic extract would do
+worse on a real one, so the generator makes the same mess, at named rates:
+- **charts not done:** a visit gets a full perio chart at a named rate, lower at mobile and nursing-home sites;
+- **partial charts:** some teeth only; buccal sites only; no gingival margin (so no CAL); no bleeding;
+- **poor readings:** a chart copied forward from the last one; every site the same depth; an out-of-range
+  value; a tooth charted after its extraction;
+- **radiographs:** full-mouth, bitewing and panoramic procedures, each with an Open Dental `document` row
+  (`ImgType` 1, Radiograph; `ToothNumbers`). Open Dental doesn't store bone loss as a number, so a separate,
+  **simulated** reading (`radiograph_bone_level`: bone loss % per tooth on the image, sometimes not read) stands
+  in for a radiograph-reading tool. It's a derived silver table, never an Open Dental one.
+
+`realism_profile(tables)` measures the same rates from any extract in this format, as counts and shares only. The
+parameters can be set from a real extract's profile without moving any of its rows. The tooth table gains the
+tooth's last radiograph bone loss before the loss and the quality of its last chart (complete, partial, copied,
+uniform), so the model can learn when to trust which.
+
+**Why this priority**: the model's results only mean something if the data is as hard as the real thing.
+
+**Independent Test**:
+- The profile of a generated extract matches the declared rates.
+- Setting every mess rate to zero gives back complete charts.
+- Every `document` row has its radiograph procedure.
+- Readings exist only for documents.
+
+**Acceptance Scenarios**:
+
+1. **Given** the default parameters, **When** `realism_profile` runs on a generated extract, **Then** each
+   measured rate is within sampling error of its parameter.
+2. **Given** a visit without a perio chart, **Then** the tooth table takes that tooth's own measures from the last
+   charted exam before it, and records which exam that was.
+3. **Given** a radiograph before the loss with a reading for the tooth, **Then** `last_rbl_pct` is that reading;
+   with none, it is null and the tooth still has a row.
+
 ### Edge Cases
 
 - **Third molars:** they are often missing for other reasons (the synthetic mouths already treat them so), so
@@ -271,7 +307,8 @@ relationship joins declared columns; every OMOP column names its source; the gen
   023's `class_metrics` has landed, the binary case reuses it.
 - **FR-007** Writes are idempotent (overwrite by run, or delete-then-append by `run_id`). The Open Dental tables
   keep Open Dental's columns only; each run appends one row per table written to `silver_opendental_perio.load_log`
-  with `run_id`, `run_ts` and `git_commit_sha`, and the derived tables carry them on every row.
+  with `run_id`, `run_ts` and `git_commit_sha`. The derived tables are logged the same way (#370), except
+  `tooth_loss_dq_check`, which carries `run_id` on every row.
 - **FR-008** No OMOP mapping, no note text, no language models anywhere in this bench.
 - **FR-010** Two training label sets, each with its own fitted models:
   - **completed:** extractions with `ProcStatus` 2 and a mapped diagnosis;
@@ -317,6 +354,8 @@ relationship joins declared columns; every OMOP column names its source; the gen
 - **SC-004** The stage III/IV comparison shows each counting rule against the truth.
 - **SC-005** R parity covers the tooth statuses, the expected-count stage rule and the metrics.
 - **SC-006** Every planted fault is found by its check, and the clean rows pass every check.
+- **SC-008** The realism profile of a generated extract matches its declared rates, and the model's scores are
+  reported at the default (messy) rates and with every mess rate at zero, so the cost of messy records is shown.
 - **SC-007** Both label sets are scored on the same held-out and missing-at-entry teeth, and every planned
   extraction counts once however many plan copies carry it.
 

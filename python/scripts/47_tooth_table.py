@@ -21,7 +21,8 @@ args = ap.parse_args()
 
 telemetry.setup()
 telemetry.start_script("47_tooth_table", data_label="synthetic")
-x = open_dental.clean(open_dental.build(open_dental.Params(n_patients=args.patients), seed=args.seed)[0])
+tables, _, readings = open_dental.build_with_readings(open_dental.Params(n_patients=args.patients), seed=args.seed)
+x = {**open_dental.clean(tables), "radiograph_bone_level": readings}   # the reading is SIMULATED (#385)
 out = DATASETS_DIR / "tooth_loss"
 out.mkdir(parents=True, exist_ok=True)
 
@@ -36,4 +37,5 @@ teeth.to_csv(out / "patient_tooth.csv", index=False)
 tooth_loss.planned_extraction(x).to_csv(out / "planned_extraction.csv", index=False)
 
 print(f"SYNTHETIC extract: {args.patients} patients, seed {args.seed}")
+print(open_dental.realism_profile(tables, readings).round(3).to_string(index=False))
 print(teeth["tooth_status_code"].value_counts().to_string())

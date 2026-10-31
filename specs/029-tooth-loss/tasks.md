@@ -49,3 +49,11 @@ Implementation starts after this spec, plan and tasks are reviewed.
 - [x] T014 [US5] The 16 further Open Dental tables in research.md (checked in the source), the silver model and the
   three ERDs, in the reference's subject areas; free text marked PHI
 - [x] T015 [US5] The generator (T003) and the load job (T007) write them too
+
+## US6 #385: the synthetic extract is as messy as real practice records
+
+- [x] T016 [US6] Failing tests (`test_open_dental.py`), then the generator's mess rates (charts not done, partial,
+  copied, uniform, out of range, charted after loss), radiograph procedures and `document` rows, and the simulated
+  `radiograph_bone_level` reading; `realism_profile`; research.md, the silver model and the ERDs
+- [x] T017 [US6] Failing tests (`test_tooth_loss.py`), then `last_rbl_pct` and the last chart's quality in the tooth
+  table; the load job writes `radiograph_bone_level`

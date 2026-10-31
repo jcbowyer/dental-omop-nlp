@@ -12,9 +12,12 @@ Status, first rule that applies:
 3. a planned extraction (ProcStatus 1) with a diagnosis: planned_perio or planned_other;
 4. otherwise present (a planned extraction with no diagnosis leaves the tooth present and unlabelled).
 
-Features come from the patient's last perio exam on or before the event date (extraction date, or the plan date for a
-planned one; an exam on the extraction day is charted first); a present tooth uses the last exam. A tooth missing at
-entry has no own measures; its neighbours come from the first exam. CAL = probing depth + gingival margin per site
+Own measures come from the last perio exam on or before the event date that charted the tooth (extraction date, or
+the plan date for a planned one; an exam on the extraction day is charted first; a present tooth uses the last), with
+that chart's quality (complete, partial, copied, uniform: open_dental.chart_quality), since real charts are often
+missing or partial (#385). Neighbours come from the patient's last exam on or before the event. Own radiographic bone
+loss is the last radiograph reading on or before the event (`radiograph_bone_level`, a SIMULATED reading; optional).
+A tooth missing at entry has no own measures; its neighbours come from the first exam. CAL = probing depth + gingival margin per site
 (Open Dental never stores it). Mouth-level measures come from the first exam.
 """
 
@@ -34,12 +37,14 @@ _FAR_FUTURE = pd.Timestamp("2200-01-01")
 
 # what the model may read: shared features exist for every tooth, own features only where the tooth was charted
 SHARED_FEATURES = ["tooth_type_code", "neighbour_max_cal_mm", "mouth_cal5_site_pct", "mouth_max_pd_mm",
-                   "mouth_bop_pct", "teeth_missing_at_entry_count", "age_at_first_exam_num", "is_smoker",
+                   "mouth_bop_pct", "mouth_max_rbl_pct", "teeth_missing_at_entry_count", "age_at_first_exam_num", "is_smoker",
                    "is_diabetic"]
-OWN_FEATURES = [*SHARED_FEATURES, "last_max_pd_mm", "last_max_cal_mm", "last_bop_pct", "last_mobility_code"]
+OWN_FEATURES = [*SHARED_FEATURES, "last_max_pd_mm", "last_max_cal_mm", "last_bop_pct", "last_mobility_code",
+                "last_chart_quality_code", "last_rbl_pct"]
 COLUMNS = ["patient_id", "tooth_num", "tooth_status_code", "loss_date", "label_source_code", "dx_def_id",
            "is_perio_loss", "last_exam_date", "last_max_pd_mm", "last_max_cal_mm", "last_bop_pct",
-           "last_mobility_code", "neighbour_max_cal_mm", "mouth_cal5_site_pct", "mouth_max_pd_mm", "mouth_bop_pct",
+           "last_mobility_code", "last_chart_quality_code", "last_rbl_pct", "last_radiograph_date",
+           "neighbour_max_cal_mm", "mouth_cal5_site_pct", "mouth_max_pd_mm", "mouth_bop_pct", "mouth_max_rbl_pct",
            "teeth_missing_at_entry_count", "tooth_type_code", "age_at_first_exam_num", "is_smoker", "is_diabetic"]
 
 
@@ -161,6 +166,31 @@ def _statuses(x: dict[str, pd.DataFrame], patients: pd.Series) -> pd.DataFrame:
     return t
 
 
+def _chart_quality_codes(x: dict[str, pd.DataFrame]) -> pd.Series:
+    """Each perio exam's quality, worst first: copied, uniform, partial, else complete (open_dental.chart_quality)."""
+    if x["perioexam"].empty:
+        return pd.Series(dtype=object)
+    q = od.chart_quality(x)
+    code = pd.Series("complete", index=q.index)
+    code[q["is_partial"]] = "partial"
+    code[q["is_uniform"]] = "uniform"
+    code[q["is_copied"]] = "copied"
+    return pd.Series(code.to_numpy(), index=_num(q["perioexamnum"]).to_numpy())
+
+
+def _readings(x: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Radiograph readings with a value (the simulated `radiograph_bone_level`), sorted for an as-of join."""
+    r = x.get("radiograph_bone_level")
+    if r is None or r.empty:
+        r = pd.DataFrame({c: pd.Series(dtype=d) for c, d in (("document_id", "int64"), ("patient_id", "int64"),
+                                                              ("tooth_num", "int64"), ("image_date", "datetime64[ns]"),
+                                                              ("bone_loss_pct", "float64"))})
+    r = r.dropna(subset=["bone_loss_pct"]).astype({"document_id": "int64", "patient_id": "int64",
+                                                  "tooth_num": "int64", "bone_loss_pct": "float64"})
+    r["image_date"] = _date(r["image_date"])
+    return r[["document_id", "patient_id", "tooth_num", "image_date", "bone_loss_pct"]].sort_values("image_date")
+
+
 def _patient_features(x: dict[str, pd.DataFrame], exams: pd.DataFrame, teeth: pd.DataFrame) -> pd.DataFrame:
     pat = x["patient"].copy()
     pat["patient_id"] = _num(pat["patnum"])
@@ -197,14 +227,35 @@ def tooth_table(x: dict[str, pd.DataFrame]) -> pd.DataFrame:
     # the reference exam: the last one on or before the event (present teeth: the last one at all)
     t["_ref"] = t["event_date"].fillna(_FAR_FUTURE)
     t["_order"] = range(len(t))
-    t = pd.merge_asof(t.sort_values("_ref"), exams.rename(columns={"examdate": "last_exam_date"}),
-                      left_on="_ref", right_on="last_exam_date", by="patient_id", direction="backward")
+    t["patient_id"], t["tooth_num"] = t["patient_id"].astype("int64"), t["tooth_num"].astype("int64")
+    t = pd.merge_asof(t.sort_values("_ref"), exams[["patient_id", "perioexamnum", "examdate"]],
+                      left_on="_ref", right_on="examdate", by="patient_id", direction="backward").drop(columns="examdate")
     entry = t["tooth_status_code"] == "missing_at_entry"
-    t.loc[entry, ["perioexamnum", "last_exam_date"]] = [float("nan"), pd.NaT]
-    own = teeth.rename(columns={"max_pd": "last_max_pd_mm", "max_cal": "last_max_cal_mm", "bop_pct": "last_bop_pct",
-                                "mobility": "last_mobility_code"})
-    t = t.merge(own[["perioexamnum", "tooth_num", "last_max_pd_mm", "last_max_cal_mm", "last_bop_pct",
-                     "last_mobility_code"]], on=["perioexamnum", "tooth_num"], how="left")
+    t.loc[entry, "perioexamnum"] = float("nan")
+
+    # own measures: the last exam on or before the event that charted this tooth (charts are often partial, #385)
+    own = teeth.merge(exams, on="perioexamnum").rename(columns={
+        "examdate": "last_exam_date", "max_pd": "last_max_pd_mm", "max_cal": "last_max_cal_mm",
+        "bop_pct": "last_bop_pct", "mobility": "last_mobility_code"})
+    own["last_chart_quality_code"] = own["perioexamnum"].map(_chart_quality_codes(x))
+    own = own.astype({"patient_id": "int64", "tooth_num": "int64"}).sort_values("last_exam_date")
+    own_cols = ["last_exam_date", "last_max_pd_mm", "last_max_cal_mm", "last_bop_pct", "last_mobility_code",
+                "last_chart_quality_code"]
+    t = pd.merge_asof(t.sort_values("_ref"), own[["patient_id", "tooth_num", *own_cols]], left_on="_ref",
+                      right_on="last_exam_date", by=["patient_id", "tooth_num"], direction="backward")
+    t.loc[entry, own_cols] = None
+    t["last_exam_date"] = t["last_exam_date"].astype("datetime64[ns]")
+
+    # own radiographic bone loss: the last radiograph read on or before the event (a SIMULATED reading here)
+    reads = _readings(x)
+    t = pd.merge_asof(t.sort_values("_ref"), reads.rename(columns={"image_date": "last_radiograph_date",
+                                                                    "bone_loss_pct": "last_rbl_pct"}),
+                      left_on="_ref", right_on="last_radiograph_date", by=["patient_id", "tooth_num"],
+                      direction="backward")
+    t.loc[entry, ["last_rbl_pct", "last_radiograph_date"]] = [float("nan"), pd.NaT]
+    first_doc = reads.sort_values(["image_date", "document_id"]).drop_duplicates("patient_id")[["document_id"]]
+    mouth_rbl = reads.merge(first_doc, on="document_id").groupby("patient_id")["bone_loss_pct"].max()
+    t["mouth_max_rbl_pct"] = t["patient_id"].map(mouth_rbl).astype("float64")
     # neighbours at the reference exam, or at the first exam for a tooth missing at entry
     t["_nexam"] = t["perioexamnum"].where(~entry, t["first_exam"])
     t = t.merge(_neighbours(teeth).rename(columns={"perioexamnum": "_nexam"}), on=["_nexam", "tooth_num"], how="left")
@@ -213,7 +264,6 @@ def tooth_table(x: dict[str, pd.DataFrame]) -> pd.DataFrame:
         lambda s: (s == "missing_at_entry").sum()).astype("int64")
     t["tooth_type_code"] = t["tooth_num"].map(_tooth_type)
     t = t.sort_values("_order").reset_index(drop=True)
-    t["patient_id"], t["tooth_num"] = t["patient_id"].astype("int64"), t["tooth_num"].astype("int64")
     return t[COLUMNS]
 
 

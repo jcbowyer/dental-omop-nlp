@@ -41,7 +41,9 @@ def test_open_dental_tables_are_the_ones_spec_029_researched():
                            # #381: the rest of a typical research extract
                            "provider", "appointment", "medication", "medicationpat", "allergy", "allergydef", "sheet",
                            "sheetfield", "vitalsign", "patientrace", "cdcrec", "site", "procnote", "ehrmeasureevent",
-                           "patfield", "snomed"}
+                           "patfield", "snomed",
+                           # #385: radiographs
+                           "document"}
     assert "language" not in OD.TABLES          # Open Dental's language table is screen translations
     for name in source:
         allowed = _research_columns(name)
@@ -51,7 +53,9 @@ def test_open_dental_tables_are_the_ones_spec_029_researched():
 
 
 def test_the_derived_tables_follow_spec_029():
-    assert {"patient_tooth", "planned_extraction", "tooth_loss_dq_check", "tooth_loss_truth"} <= set(OD.TABLES)
+    assert {"patient_tooth", "planned_extraction", "tooth_loss_dq_check", "tooth_loss_truth",
+            "radiograph_bone_level"} <= set(OD.TABLES)
+    assert OD.TABLES["radiograph_bone_level"].area == "derived"          # simulated: never an Open Dental table
     assert OD.TABLES["tooth_loss_truth"].area == "eval"
 
 
